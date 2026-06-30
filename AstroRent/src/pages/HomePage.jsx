@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Search, MapPin, Bed, Bath } from "lucide-react";
+import VerificationBadge from "../components/VerificationBadge";
 
 function HomePage() {
   const [houses, setHouses] = useState([]);
@@ -20,10 +22,18 @@ function HomePage() {
           AstroRent
         </h1>
 
-        <div className="flex gap-6">
+        <div className="flex items-center gap-6">
           <button className="hover:text-blue-600">Home</button>
           <button className="hover:text-blue-600">Listings</button>
-          <button className="hover:text-blue-600">Login</button>
+          <Link to="/login" className="hover:text-blue-600">
+            Login
+          </Link>
+          <Link
+            to="/signup"
+            className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700"
+          >
+            Sign up
+          </Link>
         </div>
       </nav>
 
@@ -38,6 +48,27 @@ function HomePage() {
         <p className="mb-8 text-lg">
           Search houses anywhere in Kenya
         </p>
+
+        <div className="mb-8 flex flex-wrap justify-center gap-3">
+          <Link
+            to="/login"
+            className="rounded-lg bg-white px-5 py-3 font-semibold text-blue-600 hover:bg-blue-50"
+          >
+            Login
+          </Link>
+          <Link
+            to="/signup/home-finder"
+            className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white hover:text-blue-600"
+          >
+            Sign up as home finder
+          </Link>
+          <Link
+            to="/signup/home-owner"
+            className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white hover:text-blue-600"
+          >
+            Sign up as home owner
+          </Link>
+        </div>
 
 
         {/* Search Box */}
@@ -85,6 +116,10 @@ function HomePage() {
                   {house.title}
                 </h3>
 
+                <div className="mb-3">
+                  <VerificationBadge status={house.status} compact />
+                </div>
+
                 <div className="flex items-center gap-2 text-gray-500 mb-3">
                   <MapPin size={16} />
                   <span>{house.location}</span>
@@ -108,9 +143,9 @@ function HomePage() {
 
                 </div>
 
-                <button className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
+                <Link to={`/houses/${house.id}`} className="w-full block text-center bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
                   View Details
-                </button>
+                </Link>
 
               </div>
 

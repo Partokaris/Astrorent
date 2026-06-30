@@ -10,6 +10,7 @@ function AddHouse() {
     beds: "",
     baths: ""
   });
+  const [files, setFiles] = useState(null);
 
   const handleChange = (e) => {
     setForm({
@@ -18,15 +19,44 @@ function AddHouse() {
     });
   };
 
+  const handleFileChange = (e) => {
+    setFiles(e.target.files);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    let imageUrls = [];
+
+    // If files selected, upload them first
+    if (files && files.length > 0) {
+      const fd = new FormData();
+      for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
+      const token = localStorage.getItem('token') || null;
+      const uploadRes = await fetch('http://127.0.0.1:5000/api/uploads', {
+        method: 'POST',
+        body: fd,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+      if (uploadRes.ok) {
+        const uploadData = await uploadRes.json();
+        imageUrls = uploadData.urls || [];
+      }
+    }
+
+    const payload = {
+      ...form,
+      images: imageUrls
+    };
+
+    const token = localStorage.getItem('token') || null;
     await fetch("http://127.0.0.1:5000/api/houses", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
-      body: JSON.stringify(form)
+      body: JSON.stringify(payload)
     });
 
     alert("House added!");
@@ -44,7 +74,10 @@ function AddHouse() {
 
       <input name="price" placeholder="Price" onChange={handleChange} className="border p-2 w-full mb-3" />
 
-      <input name="image" placeholder="Image URL" onChange={handleChange} className="border p-2 w-full mb-3" />
+  <input name="image" placeholder="Image URL" onChange={handleChange} className="border p-2 w-full mb-3" />
+
+  <label className="block mb-3">Images</label>
+  <input type="file" multiple onChange={handleFileChange} className="border p-2 w-full mb-3" />
 
       <input name="beds" placeholder="Beds" onChange={handleChange} className="border p-2 w-full mb-3" />
 
