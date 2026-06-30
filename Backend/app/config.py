@@ -1,3 +1,12 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+
 class Config:
 
     SQLALCHEMY_DATABASE_URI = (
@@ -6,7 +15,7 @@ class Config:
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    JWT_SECRET_KEY = "astrorent-secret-key"
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "astrorent-secret-key")
     # Engine options: enable pre-ping to recycle connections that were closed by the server
     # and set a recycle timeout to avoid stale connections. Also set a small connect timeout.
     SQLALCHEMY_ENGINE_OPTIONS = {
@@ -20,5 +29,4 @@ class Config:
         },
     }
     # Max request size accepted by Flask (bytes). Protects against huge uploads.
-    # Set to 8MB by default; adjust as needed.
-    MAX_CONTENT_LENGTH = 8 * 1024 * 1024
+    MAX_CONTENT_LENGTH = 10 * 1024 * 1024

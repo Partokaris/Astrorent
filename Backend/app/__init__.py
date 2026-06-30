@@ -1,6 +1,7 @@
 from flask import Flask
 from flask_cors import CORS
 
+from app.cloudinary_config import configure_cloudinary
 from app.config import Config
 from app.extensions import db, jwt
 from app.routes import house_bp, auth_bp, user_bp
@@ -103,7 +104,8 @@ def ensure_dashboard_columns():
 
         missing_client_user_columns = {
             "status": "VARCHAR(20) NOT NULL DEFAULT 'active'",
-            "identity_verified": "BOOLEAN NOT NULL DEFAULT 0"
+            "identity_verified": "BOOLEAN NOT NULL DEFAULT 0",
+            "profile_picture": "VARCHAR(500)"
         }
 
         for column_name, column_definition in missing_client_user_columns.items():
@@ -138,6 +140,7 @@ def create_app():
 
 
     app.config.from_object(Config)
+    configure_cloudinary()
 
     CORS(app)
 

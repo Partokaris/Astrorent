@@ -26,7 +26,7 @@ function AddHouse() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    let imageUrls = [];
+    let images = [];
 
     // If files selected, upload them first
     if (files && files.length > 0) {
@@ -40,13 +40,13 @@ function AddHouse() {
       });
       if (uploadRes.ok) {
         const uploadData = await uploadRes.json();
-        imageUrls = uploadData.urls || [];
+        images = uploadData.images || (uploadData.urls || []).map((url) => ({ url }));
       }
     }
 
     const payload = {
       ...form,
-      images: imageUrls
+      images
     };
 
     const token = localStorage.getItem('token') || null;

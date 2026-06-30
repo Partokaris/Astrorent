@@ -933,6 +933,8 @@ function BuildingList({ apartments, houses, bookings, loading, onEdit }) {
 
 function ApartmentForm({ form, setForm, apartments, editingHouseId, waitingForFirstApproval, onSubmit, onCancel, onUseCurrentLocation }) {
   const [imageCategory, setImageCategory] = useState("bedroom");
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState("");
 
   const update = (event) => {
     setForm((current) => ({
@@ -953,13 +955,7 @@ function ApartmentForm({ form, setForm, apartments, editingHouseId, waitingForFi
     }));
   };
 
-  const handleImageFiles = async (event) => {
-    const files = Array.from(event.target.files || []);
-
-    if (files.length === 0) {
-      return;
-    }
-
+  const uploadFilesToCloudinary = async (files) => {
     const token = localStorage.getItem("owner_token");
     const formData = new FormData();
     files.forEach((file) => formData.append("files", file));
@@ -977,22 +973,63 @@ function ApartmentForm({ form, setForm, apartments, editingHouseId, waitingForFi
       throw new Error(data.message || "Image upload failed");
     }
 
-    const uploads = (data.urls || []).map((url, index) => ({
+    return data.images && data.images.length ? data.images : (data.urls || []).map((url) => ({ url }));
+  };
+
+  const handleCoverImageFile = async (event) => {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    setCoverUploading(true);
+    setImageUploadError("");
+
+    try {
+      const [uploaded] = await uploadFilesToCloudinary([file]);
+
+      if (!uploaded?.url && !uploaded?.secure_url) {
+        throw new Error("Image upload failed");
+      }
+
+      setForm((current) => ({
+        ...current,
+        image: uploaded.url || uploaded.secure_url
+      }));
+    } catch (err) {
+      setImageUploadError(err.message);
+    } finally {
+      setCoverUploading(false);
+      event.target.value = "";
+    }
+  };
+
+  const handleImageFiles = async (event) => {
+    const files = Array.from(event.target.files || []);
+
+    if (files.length === 0) {
+      return;
+    }
+
+    setImageUploadError("");
+
+    let uploadedImages = [];
+
+    try {
+      uploadedImages = await uploadFilesToCloudinary(files);
+    } catch (err) {
+      setImageUploadError(err.message);
+      event.target.value = "";
+      return;
+    }
+
+    const uploads = uploadedImages.map((image, index) => ({
       category: imageCategory,
       name: files[index]?.name || "Apartment image",
-      url
+      url: image.url || image.secure_url,
+      public_id: image.public_id
     }));
-
-    if (uploads.length === 0) {
-      const previews = await Promise.all(
-        files.map(async (file) => ({
-        category: imageCategory,
-        name: file.name,
-        data_url: await fileToDataUrl(file)
-      }))
-      );
-      uploads.push(...previews);
-    }
 
     setForm((current) => ({
       ...current,
@@ -1003,6 +1040,13 @@ function ApartmentForm({ form, setForm, apartments, editingHouseId, waitingForFi
     }));
 
     event.target.value = "";
+  };
+
+  const removeCoverImage = () => {
+    setForm((current) => ({
+      ...current,
+      image: ""
+    }));
   };
 
   const removeImage = (index) => {
@@ -1068,7 +1112,45 @@ function ApartmentForm({ form, setForm, apartments, editingHouseId, waitingForFi
         </select>
       </label>
 
-      <Field label="Cover image URL (optional)" name="image" value={form.image} onChange={update} required={false} />
+      <div className="mb-3 rounded-md border border-slate-200 p-3">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="font-semibold">Cover image</p>
+          <ImagePlus size={18} className="text-blue-600" />
+        </div>
+
+        {form.image ? (
+          <div className="mb-3 overflow-hidden rounded-md border bg-white">
+            <img src={form.image} alt="Cover preview" className="h-40 w-full object-cover" />
+            <div className="flex items-center justify-between gap-2 p-2">
+              <span className="truncate text-xs font-semibold text-slate-600">Cloudinary cover image</span>
+              <button
+                type="button"
+                onClick={removeCoverImage}
+                className="text-xs font-semibold text-red-600 hover:text-red-700"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <label className="flex cursor-pointer items-center justify-center rounded-md border border-dashed border-slate-300 px-3 py-4 text-sm font-semibold text-slate-600 hover:border-blue-500 hover:text-blue-600">
+          {coverUploading ? "Uploading cover image..." : "Choose cover image from device"}
+          <input
+            type="file"
+            accept="image/*"
+            onChange={handleCoverImageFile}
+            disabled={coverUploading}
+            className="sr-only"
+          />
+        </label>
+
+        {imageUploadError && (
+          <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+            {imageUploadError}
+          </p>
+        )}
+      </div>
 
       <div className="mb-3 rounded-md border border-slate-200 p-3">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -1619,16 +1701,6 @@ function getTenantBalance(tenant) {
   const latestPayment = tenant.payments?.[0];
 
   return Math.max(getExpectedRent(tenant) - Number(latestPayment?.amount || 0), 0);
-}
-
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }
 
 function getImageSrc(image) {

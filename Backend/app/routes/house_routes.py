@@ -10,9 +10,14 @@ from app.models.income_record import IncomeRecord
 from app.models.client_user import ClientUser
 from app.models.booking_request import BookingRequest
 from app.models.announcement import Announcement
-import os
-from werkzeug.utils import secure_filename
-from flask import send_from_directory
+from app.utils.cloudinary_uploads import (
+    UploadConfigurationError,
+    UploadValidationError,
+    collect_image_references,
+    delete_image,
+    extract_public_id,
+    upload_image
+)
 
 
 house_bp = Blueprint(
@@ -20,65 +25,38 @@ house_bp = Blueprint(
     __name__
 )
 
-# Ensure uploads directory exists
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-UPLOAD_DIR = os.path.join(ROOT_DIR, 'uploads')
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-
-@house_bp.route('/uploads/<path:filename>')
-def uploaded_file(filename):
-    # Serve uploaded files (development only)
-    return send_from_directory(UPLOAD_DIR, filename)
-
 
 @house_bp.route('/api/uploads', methods=['POST'])
 @jwt_required()
 def upload_files():
-    # Only allow authenticated owners (or admins) to upload files.
-    # Owner identity format is expected to be 'owner:<id>' (see current_owner_id()).
-    identity = get_jwt_identity() or ""
-    owner_id = None
-    if isinstance(identity, str) and identity.startswith("owner:"):
-        try:
-            owner_id = int(identity.split(":", 1)[1])
-        except Exception:
-            owner_id = None
-
-    # Reject overly large total payloads early
     if request.content_length and request.content_length > current_app.config.get('MAX_CONTENT_LENGTH', 0):
         return jsonify({"message": "Payload too large"}), 413
 
     files = request.files.getlist('files')
-    saved_urls = []
 
-    # Save files into an owner-specific subdirectory when owner_id is present
-    target_dir = UPLOAD_DIR
-    prefix = ""
-    if owner_id:
-        prefix = f"owner_{owner_id}"
-        target_dir = os.path.join(UPLOAD_DIR, prefix)
-        os.makedirs(target_dir, exist_ok=True)
+    if not files or all(not file or not file.filename for file in files):
+        return jsonify({"message": "No images selected"}), 400
 
-    for f in files:
-        if not f or f.filename == '':
-            continue
-        filename = secure_filename(f.filename)
-        # avoid overwriting
-        dest_path = os.path.join(target_dir, filename)
-        base, ext = os.path.splitext(filename)
-        counter = 1
-        while os.path.exists(dest_path):
-            filename = f"{base}-{counter}{ext}"
-            dest_path = os.path.join(target_dir, filename)
-            counter += 1
-        f.save(dest_path)
-        # Construct a URL for returned path (include owner prefix if present)
-        rel_path = f"{prefix}/{filename}" if prefix else filename
-        url = request.host_url.rstrip('/') + f"/uploads/{rel_path}"
-        saved_urls.append(url)
+    uploaded_images = []
 
-    return jsonify({"urls": saved_urls})
+    for file in files:
+        try:
+            uploaded = upload_image(file, folder="projects")
+        except UploadConfigurationError as err:
+            current_app.logger.error(str(err))
+            return jsonify({"message": str(err)}), 503
+        except UploadValidationError as err:
+            return jsonify({"message": str(err)}), 400
+        except Exception:
+            current_app.logger.exception("Project image upload failed")
+            return jsonify({"message": "Image upload failed. Please try again."}), 500
+
+        uploaded_images.append(uploaded)
+
+    return jsonify({
+        "urls": [image["url"] for image in uploaded_images],
+        "images": uploaded_images
+    })
 
 
 def house_to_dict(house, include_owner_contact=False, include_private_details=False):
@@ -291,6 +269,66 @@ def owner_can_submit_listing(owner_id):
     return existing_count == 0 or owner_has_approved_listing(owner_id)
 
 
+def is_cloudinary_url(value):
+    return isinstance(value, str) and value.startswith("https://res.cloudinary.com/")
+
+
+def normalize_cloudinary_images(images):
+    clean_images = []
+
+    for image in images or []:
+        if isinstance(image, str):
+            if is_cloudinary_url(image):
+                clean_images.append(image)
+            continue
+
+        if isinstance(image, dict):
+            url = image.get("secure_url") or image.get("url") or image.get("src")
+            public_id = image.get("public_id") or extract_public_id(url)
+
+            if is_cloudinary_url(url):
+                clean_image = {
+                    "category": image.get("category", "other"),
+                    "url": url
+                }
+
+                if public_id:
+                    clean_image["public_id"] = public_id
+
+                clean_images.append(clean_image)
+
+    return clean_images
+
+
+def reject_invalid_image_payload(data):
+    image = data.get("image")
+
+    if image and not is_cloudinary_url(image):
+        return "Images must be uploaded through /api/uploads before saving."
+
+    for img in data.get("images", []):
+        value = img
+
+        if isinstance(img, dict):
+            value = img.get("secure_url") or img.get("url") or img.get("src") or img.get("data_url")
+
+        if isinstance(value, str) and value.startswith("data:"):
+            return "Inline base64 images are not accepted. Use /api/uploads to upload files first."
+
+        if value and not is_cloudinary_url(value):
+            return "Only Cloudinary image URLs can be saved."
+
+    return None
+
+
+def delete_removed_images(previous_references, house):
+    current_references = set(collect_image_references(house))
+
+    for reference in previous_references:
+        if reference not in current_references:
+            delete_image(reference)
+
+
 def apply_house_data(house, data):
     monthly_income = data.get(
         "monthly_income",
@@ -301,10 +339,16 @@ def apply_house_data(house, data):
     house.apartment_id = data.get("apartment_id", house.apartment_id)
     house.location = data.get("location", house.location)
     house.price = data.get("price", house.price)
+    clean_images = normalize_cloudinary_images(data.get("images", []))
+
     house.image = data.get("image", house.image)
 
     if "images" in data:
-        house.images_json = json.dumps(data.get("images", []))
+        house.images_json = json.dumps(clean_images)
+
+        if clean_images and not data.get("image"):
+            first_image = clean_images[0]
+            house.image = first_image.get("url") if isinstance(first_image, dict) else first_image
     house.beds = int(data.get("beds", house.beds or 0))
     house.baths = int(data.get("baths", house.baths or 0))
     house.apartment_name = data.get("apartment_name", house.apartment_name)
@@ -472,31 +516,33 @@ def add_house():
         return jsonify({"message": "Payload too large"}), 413
 
     data = request.json or {}
+    image_error = reject_invalid_image_payload(data)
+
+    if image_error:
+        return jsonify({"message": image_error}), 400
 
     # Prepare images JSON and reject very large images data
-    images = data.get("images", [])
+    images = normalize_cloudinary_images(data.get("images", []))
     try:
         images_json = json.dumps(images)
     except Exception:
         images_json = '[]'
 
-    # If any image entry contains a base64 data URL, reject it and point to the upload endpoint
-    for img in images:
-        if isinstance(img, dict):
-            data_url = img.get("data_url") or img.get("url") or img.get("src")
-            if isinstance(data_url, str) and data_url.startswith("data:"):
-                return jsonify({
-                    "message": "Inline base64 images are not accepted. Use the /api/uploads endpoint to upload files and provide image URLs instead." 
-                }), 400
-
     if len(images_json) > 5_000_000:  # 5MB limit for images JSON
         return jsonify({"message": "Payload too large"}), 413
+
+    first_image = images[0] if images else None
+    cover_image = data.get("image") or (
+        first_image.get("url")
+        if isinstance(first_image, dict)
+        else first_image
+    )
 
     new_house = House(
         title=data.get("title"),
         location=data.get("location"),
         price=data.get("price"),
-        image=data.get("image"),
+        image=cover_image,
         images_json=images_json,
         beds=int(data.get("beds", 0) or 0),
         baths=int(data.get("baths", 0) or 0),
@@ -525,11 +571,18 @@ def add_house():
 def update_house(house_id):
 
     house = House.query.get_or_404(house_id)
-    data = request.json
+    data = request.json or {}
+    image_error = reject_invalid_image_payload(data)
+
+    if image_error:
+        return jsonify({"message": image_error}), 400
+
+    previous_references = collect_image_references(house)
 
     apply_house_data(house, data)
 
     db.session.commit()
+    delete_removed_images(previous_references, house)
 
     return jsonify({
         "message": "House updated successfully",
@@ -587,9 +640,13 @@ def get_all_bookings():
 def delete_house(house_id):
 
     house = House.query.get_or_404(house_id)
+    image_references = collect_image_references(house)
 
     db.session.delete(house)
     db.session.commit()
+
+    for reference in image_references:
+        delete_image(reference)
 
     return jsonify({
         "message": "House deleted successfully"
@@ -681,28 +738,12 @@ def add_owner_house():
     data = request.json or {}
 
 
-    # Clean uploaded image URLs
-    clean_images = []
+    image_error = reject_invalid_image_payload(data)
 
+    if image_error:
+        return jsonify({"message": image_error}), 400
 
-    for img in data.get("images", []):
-
-        if isinstance(img, str):
-
-            if not img.startswith("data:"):
-
-                clean_images.append(img)
-
-        if isinstance(img, dict):
-
-            url = img.get("url") or img.get("src")
-
-            if isinstance(url, str) and not url.startswith("data:"):
-
-                clean_images.append({
-                    "category": img.get("category", "other"),
-                    "url": url
-                })
+    clean_images = normalize_cloudinary_images(data.get("images", []))
 
 
     try:
@@ -877,8 +918,15 @@ def update_owner_house(house_id):
     ).first_or_404()
 
     previous_status = house.status
+    data = request.json or {}
+    image_error = reject_invalid_image_payload(data)
 
-    apply_house_data(house, request.json or {})
+    if image_error:
+        return jsonify({"message": image_error}), 400
+
+    previous_references = collect_image_references(house)
+
+    apply_house_data(house, data)
 
     if previous_status in ["active", "verified", "occupied"]:
         house.status = previous_status
@@ -886,6 +934,7 @@ def update_owner_house(house_id):
         house.status = "pending"
 
     db.session.commit()
+    delete_removed_images(previous_references, house)
 
     return jsonify({
         "message": "Apartment updated successfully",
@@ -912,8 +961,12 @@ def delete_owner_house(house_id):
         owner_id=owner_id
     ).first_or_404()
 
+    image_references = collect_image_references(house)
     db.session.delete(house)
     db.session.commit()
+
+    for reference in image_references:
+        delete_image(reference)
 
     return jsonify({
         "message": "Apartment deleted successfully"

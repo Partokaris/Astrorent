@@ -63,3 +63,7 @@ class ClientUser(db.Model):
         nullable=False,
         default=False
     )
+
+    profile_picture = db.Column(
+        db.String(500)
+    )

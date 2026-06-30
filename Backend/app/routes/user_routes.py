@@ -1,10 +1,11 @@
-from flask import Blueprint, jsonify, request
-from flask_jwt_extended import create_access_token, jwt_required
+from flask import Blueprint, current_app, jsonify, request
+from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import db
 from app.models.client_user import ClientUser
 from app.models.house import House
+from app.utils.cloudinary_uploads import UploadConfigurationError, UploadValidationError, delete_image, upload_image
 
 
 user_bp = Blueprint(
@@ -26,10 +27,28 @@ def client_user_to_dict(user):
         "property_type": user.property_type,
         "status": user.status,
         "identity_verified": user.identity_verified,
+        "profile_picture": user.profile_picture,
         "property_count": House.query.filter_by(owner_id=user.id).count()
         if user.account_type == "home_owner"
         else 0
     }
+
+
+def current_client_user():
+    identity = get_jwt_identity() or ""
+
+    if not isinstance(identity, str) or ":" not in identity:
+        return None
+
+    prefix, user_id = identity.split(":", 1)
+
+    if prefix not in {"owner", "user"}:
+        return None
+
+    try:
+        return ClientUser.query.get(int(user_id))
+    except (TypeError, ValueError):
+        return None
 
 
 @user_bp.route(
@@ -248,5 +267,47 @@ def login_owner():
 
     return jsonify({
         "token": token,
+        "user": client_user_to_dict(user)
+    })
+
+
+@user_bp.route(
+    "/api/users/profile-picture",
+    methods=["POST"]
+)
+@jwt_required()
+def upload_profile_picture():
+    if request.content_length and request.content_length > current_app.config.get("MAX_CONTENT_LENGTH", 0):
+        return jsonify({"message": "Payload too large"}), 413
+
+    user = current_client_user()
+
+    if not user:
+        return jsonify({"message": "User login required"}), 403
+
+    file = request.files.get("file") or (request.files.getlist("files") or [None])[0]
+
+    try:
+        uploaded = upload_image(file, folder="profile_pictures")
+    except UploadConfigurationError as err:
+        current_app.logger.error(str(err))
+        return jsonify({"message": str(err)}), 503
+    except UploadValidationError as err:
+        return jsonify({"message": str(err)}), 400
+    except Exception:
+        current_app.logger.exception("Profile picture upload failed")
+        return jsonify({"message": "Profile picture upload failed. Please try again."}), 500
+
+    old_picture = user.profile_picture
+    user.profile_picture = uploaded["url"]
+    db.session.commit()
+
+    if old_picture:
+        delete_image(old_picture)
+
+    return jsonify({
+        "message": "Profile picture updated",
+        "profile_picture": user.profile_picture,
+        "public_id": uploaded["public_id"],
         "user": client_user_to_dict(user)
     })
